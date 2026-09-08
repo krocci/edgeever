@@ -1,7 +1,7 @@
 import { diagramEditorSnapshot } from "@/lib/diagram-editor-snapshot";
 import { MemoTitleInput } from "@/components/MemoTitleInput";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { Dom, Export, Graph, History, Keyboard, Scroller, Selection, type Edge, type Node } from "@antv/x6";
+import { Dom, Export, Graph, History, Keyboard, Selection, type Edge, type Node } from "@antv/x6";
 import * as m from "motion/react-m";
 import {
   Activity,
@@ -64,6 +64,7 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
+  attachDiagramScroll,
   ARCHITECTURE_DIAGRAM_SCHEMA_VERSION,
   DIAGRAM_SCHEMA_VERSION,
   diagramFallbackMarkdown,
@@ -312,16 +313,6 @@ const inferArchitectureResourceIcon = (
   return item ? architectureResourceIcon(item) : undefined;
 };
 
-const isArchitectureLibraryDrag = (event: ReactDragEvent) => {
-  const types = Array.from(event.dataTransfer.types).map((type) => type.toLowerCase());
-  return types.includes(ARCHITECTURE_LIBRARY_DRAG_TYPE) || types.includes("text/plain");
-};
-
-const architectureLibraryDragIcon = (event: ReactDragEvent) => (
-  event.dataTransfer.getData(ARCHITECTURE_LIBRARY_DRAG_TYPE)
-  || event.dataTransfer.getData("text/plain")
-) as ArchitectureResourceIcon;
-
 const ArchitectureComponentLibrary = ({
   onPick,
   t,
@@ -331,7 +322,6 @@ const ArchitectureComponentLibrary = ({
 }) => {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const draggingRef = useRef(false);
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const categories = ARCHITECTURE_LIBRARY_CATEGORIES.map((category) => ({
     ...category,
@@ -340,21 +330,11 @@ const ArchitectureComponentLibrary = ({
 
   return (
     <DropdownMenu modal={false} open={open} onOpenChange={(nextOpen) => {
-      if (!nextOpen && draggingRef.current) return;
       setOpen(nextOpen);
       if (!nextOpen) setQuery("");
     }}>
       <DiagramToolbarAddTrigger onPointerEnter={() => setOpen(true)} />
-      <DropdownMenuContent
-        align="start"
-        className="max-h-[min(36rem,calc(100vh-8rem))] w-[min(30rem,calc(100vw-2rem))] overflow-y-auto p-0"
-        onPointerDownOutside={(event) => {
-          if (draggingRef.current) event.preventDefault();
-        }}
-        onFocusOutside={(event) => {
-          if (draggingRef.current) event.preventDefault();
-        }}
-      >
+      <DropdownMenuContent align="start" className="max-h-[min(36rem,calc(100vh-8rem))] w-[min(30rem,calc(100vw-2rem))] overflow-y-auto p-0">
         <div className="sticky top-0 z-10 border-b border-slate-200 bg-white p-2.5">
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
@@ -390,19 +370,11 @@ const ArchitectureComponentLibrary = ({
                             aria-label={label}
                             className={cn("flex h-10 w-10 cursor-grab justify-center rounded-lg p-0 hover:bg-current/10 focus:bg-current/10 active:cursor-grabbing", category.tone)}
                             draggable
-                            onPointerDown={(event) => event.stopPropagation()}
                             onDragStart={(event) => {
-                              draggingRef.current = true;
-                              event.stopPropagation();
-                              const icon = architectureResourceIcon(item);
                               event.dataTransfer.effectAllowed = "copy";
-                              event.dataTransfer.setData("text/plain", icon);
-                              event.dataTransfer.setData(ARCHITECTURE_LIBRARY_DRAG_TYPE, icon);
+                              event.dataTransfer.setData(ARCHITECTURE_LIBRARY_DRAG_TYPE, architectureResourceIcon(item));
                             }}
-                            onDragEnd={() => {
-                              draggingRef.current = false;
-                              setOpen(false);
-                            }}
+                            onDragEnd={() => setOpen(false)}
                             onSelect={() => {
                               onPick(item);
                               setOpen(false);
@@ -554,40 +526,16 @@ const createLocalEditSession = (memo: MemoDetail): MemoEditSession => ({
   expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
 });
 
-// X6 Scroller autoResize is debounced 200ms and then calls fitToContent, which
-// shifts the graph origin after insert and leaves a stranded editor overlay.
-const SCROLLER_AUTORESIZE_SETTLE_MS = 250;
-
-const getDiagramScroller = (graph: Graph) => graph.getPlugin("scroller") as Scroller | undefined;
-
-const suspendScrollerAutoResize = (
-  graph: Graph,
-  timerRef: { current: number | null },
-  isCurrent: () => boolean,
-) => {
-  const scroller = getDiagramScroller(graph);
-  if (!scroller) return;
-  scroller.disableAutoResize();
-  if (timerRef.current !== null) window.clearTimeout(timerRef.current);
-  timerRef.current = window.setTimeout(() => {
-    timerRef.current = null;
-    if (!isCurrent()) return;
-    scroller.enableAutoResize();
-  }, SCROLLER_AUTORESIZE_SETTLE_MS);
-};
-
 const nodeEditorState = (
   graph: Graph,
   node: Node,
   theme: DiagramTheme,
   appearance: DiagramAppearance,
-  host?: HTMLElement | null,
 ): NodeEditorState => {
   const data = node.getData<NodeData>();
   const bbox = node.getBBox();
-  const topLeft = graph.localToClient({ x: bbox.x, y: bbox.y });
-  const bottomRight = graph.localToClient({ x: bbox.x + bbox.width, y: bbox.y + bbox.height });
-  const origin = (host ?? graph.container).getBoundingClientRect();
+  const topLeft = graph.localToGraph({ x: bbox.x, y: bbox.y });
+  const bottomRight = graph.localToGraph({ x: bbox.x + bbox.width, y: bbox.y + bbox.height });
   const isRootTopic = data?.shape === "topic" && !data.parentId;
   const attrs = nodeAttrs(data?.shape ?? "process", theme, appearance, isRootTopic);
   return {
@@ -595,10 +543,10 @@ const nodeEditorState = (
     originalValue: data?.label ?? "",
     value: data?.label ?? "",
     shape: data?.shape ?? "process",
-    left: topLeft.x - origin.left,
-    top: topLeft.y - origin.top,
-    width: Math.max(1, bottomRight.x - topLeft.x),
-    height: Math.max(1, bottomRight.y - topLeft.y),
+    left: topLeft.x,
+    top: topLeft.y,
+    width: bottomRight.x - topLeft.x,
+    height: bottomRight.y - topLeft.y,
     fontSize: (data?.shape === "topic" ? 14 : 13) * graph.scale().sx,
     color: String(attrs.label.fill),
     background: String(attrs.body.fill),
@@ -1080,8 +1028,6 @@ export const DiagramEditorPane = ({
   const { t } = useTranslation();
   const { resolvedTheme } = useAppearanceTheme();
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const canvasSurfaceRef = useRef<HTMLDivElement | null>(null);
-  const scrollerResumeTimerRef = useRef<number | null>(null);
   const graphRef = useRef<Graph | null>(null);
   const insertNodeRef = useRef<(relation: MindMapInsertRelation, baseNodeId?: string) => void>(() => undefined);
   const openFlowQuickCreateRef = useRef<(node: Node) => void>(() => undefined);
@@ -1123,9 +1069,6 @@ export const DiagramEditorPane = ({
   const [notebookUpdatePending, setNotebookUpdatePending] = useState(false);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const [zoomPercent, setZoomPercent] = useState(100);
-  const [spacePanActive, setSpacePanActive] = useState(false);
-  const [shiftSelectActive, setShiftSelectActive] = useState(false);
-  const spacePanActiveRef = useRef(false);
   const [historyState, setHistoryState] = useState({ undo: false, redo: false });
   const [nodeEditor, setNodeEditor] = useState<NodeEditorState | null>(null);
   const [flowQuickCreate, setFlowQuickCreate] = useState<FlowQuickCreateState | null>(null);
@@ -1136,40 +1079,9 @@ export const DiagramEditorPane = ({
   const nodeEditorRef = useRef<NodeEditorState | null>(null);
   const editorDirty = dirty || tagsDirty;
 
-  spacePanActiveRef.current = spacePanActive;
-
   useEffect(() => {
     setPendingArchitectureItem(null);
   }, [memo.id]);
-
-  useEffect(() => {
-    const isTextInput = (target: EventTarget | null) => target instanceof HTMLElement
-      && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName));
-    const handleCanvasKeyDown = (event: KeyboardEvent) => {
-      if (isTextInput(event.target)) return;
-      if (event.key === "Shift") setShiftSelectActive(true);
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
-      if (event.code !== "Space" || !(event.target instanceof globalThis.Node) || !containerRef.current?.contains(event.target)) return;
-      event.preventDefault();
-      setSpacePanActive(true);
-    };
-    const handleCanvasKeyUp = (event: KeyboardEvent) => {
-      if (event.key === "Shift") setShiftSelectActive(false);
-      if (event.code === "Space") setSpacePanActive(false);
-    };
-    const releaseTemporaryPan = () => {
-      setShiftSelectActive(false);
-      setSpacePanActive(false);
-    };
-    window.addEventListener("keydown", handleCanvasKeyDown);
-    window.addEventListener("keyup", handleCanvasKeyUp);
-    window.addEventListener("blur", releaseTemporaryPan);
-    return () => {
-      window.removeEventListener("keydown", handleCanvasKeyDown);
-      window.removeEventListener("keyup", handleCanvasKeyUp);
-      window.removeEventListener("blur", releaseTemporaryPan);
-    };
-  }, []);
 
   useEffect(() => {
     if (!pendingArchitectureItem) return;
@@ -1185,7 +1097,7 @@ export const DiagramEditorPane = ({
   const beginNodeEdit = useCallback((node: Node) => {
     const graph = graphRef.current;
     if (!graph || readOnly) return;
-    const nextEditor = nodeEditorState(graph, node, themeRef.current, appearanceRef.current, canvasSurfaceRef.current);
+    const nextEditor = nodeEditorState(graph, node, themeRef.current, appearanceRef.current);
     nodeEditorRef.current = nextEditor;
     setNodeEditor(nextEditor);
   }, [readOnly]);
@@ -1289,7 +1201,7 @@ export const DiagramEditorPane = ({
     if (!currentEditor) return;
     const node = graph.getCellById(currentEditor.nodeId);
     if (!node?.isNode()) return;
-    const visualState = nodeEditorState(graph, node, themeRef.current, resolvedTheme, canvasSurfaceRef.current);
+    const visualState = nodeEditorState(graph, node, themeRef.current, resolvedTheme);
     const nextEditor = {
       ...currentEditor,
       color: visualState.color,
@@ -1311,9 +1223,9 @@ export const DiagramEditorPane = ({
       async: true,
       background: { color: palette.canvas },
       grid: false,
-      panning: false,
+      panning: { enabled: true, eventTypes: ["leftMouseDown"] },
       mousewheel: { enabled: true, modifiers: ["ctrl", "meta"], minScale: 0.3, maxScale: 2.5 },
-      interacting: () => !readOnly && !spacePanActiveRef.current,
+      interacting: !readOnly,
       connecting: {
         allowBlank: document.kind === "flowchart",
         allowLoop: false,
@@ -1346,13 +1258,6 @@ export const DiagramEditorPane = ({
         },
       },
     });
-    graph.use(new Scroller({
-      enabled: true,
-      autoResize: true,
-      padding: 32,
-      pannable: { enabled: true, eventTypes: ["leftMouseDown", "rightMouseDown"] },
-      className: "edgeever-diagram-scroller",
-    }));
     graph.use(new History({ enabled: !readOnly }));
     graph.use(new Export());
     graph.use(new Keyboard({
@@ -1363,16 +1268,8 @@ export const DiagramEditorPane = ({
         return !(target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)));
       },
     }));
-    graph.use(new Selection({
-      enabled: true,
-      multiple: true,
-      multipleSelectionModifiers: ["ctrl", "meta", "shift"],
-      rubberband: true,
-      modifiers: "shift",
-      movable: !readOnly,
-      showNodeSelectionBox: true,
-      showEdgeSelectionBox: true,
-    }));
+    graph.use(new Selection({ enabled: true, multiple: true, rubberband: true, movable: !readOnly, showNodeSelectionBox: true, showEdgeSelectionBox: true }));
+    const detachScroll = attachDiagramScroll(graph.container, graph);
     graph.addNodes(document.nodes.map((node) => {
       const inferredResourceIcon = document.kind === "architecture" && !node.resourceIcon
         ? inferArchitectureResourceIcon(node.label, t)
@@ -1390,6 +1287,14 @@ export const DiagramEditorPane = ({
       }
     }
     graph.addEdges(document.edges.map((edge) => edgeMetadata(edge, document.kind, documentTheme, appearance)));
+    let viewportWidth = containerRef.current?.clientWidth ?? 0;
+    let viewportHeight = containerRef.current?.clientHeight ?? 0;
+    graph.on("resize", ({ width, height }) => {
+      const translation = graph.translate();
+      graph.translate(translation.tx + (width - viewportWidth) / 2, translation.ty + (height - viewportHeight) / 2);
+      viewportWidth = width;
+      viewportHeight = height;
+    });
     graph.on("scale", () => setZoomPercent(Math.round(graph.scale().sx * 100)));
     graph.cleanHistory();
     fitDiagramContent(graph, document, containerRef.current);
@@ -1743,12 +1648,8 @@ export const DiagramEditorPane = ({
       flowPointerDragRef.current = null;
       openFlowQuickCreateRef.current = () => undefined;
       nodeEditorRef.current = null;
-      if (scrollerResumeTimerRef.current !== null) {
-        window.clearTimeout(scrollerResumeTimerRef.current);
-        scrollerResumeTimerRef.current = null;
-      }
       graphRef.current = null;
-      graph.dispose();
+      detachScroll(); graph.dispose();
     };
   }, [beginNodeEdit, dismissFlowQuickCreate, memo.contentHash, memo.id, readOnly]);
 
@@ -1784,7 +1685,6 @@ export const DiagramEditorPane = ({
   ) => {
     const graph = graphRef.current;
     if (!graph || !document || readOnly) return;
-    suspendScrollerAutoResize(graph, scrollerResumeTimerRef, () => graphRef.current === graph);
     const baseNodeId = options.baseNodeId ?? selectedNodeId;
     const selected = baseNodeId
       ? graph.getCellById(baseNodeId) as Node | undefined
@@ -1926,26 +1826,26 @@ export const DiagramEditorPane = ({
   }, [addNode, t]);
 
   const handleArchitectureDragOver = (event: ReactDragEvent<HTMLDivElement>) => {
-    if (document?.kind !== "architecture" || readOnly || !isArchitectureLibraryDrag(event)) return;
+    if (document?.kind !== "architecture" || readOnly || !Array.from(event.dataTransfer.types).includes(ARCHITECTURE_LIBRARY_DRAG_TYPE)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
   };
 
   const handleArchitectureDrop = (event: ReactDragEvent<HTMLDivElement>) => {
-    if (document?.kind !== "architecture" || readOnly || !isArchitectureLibraryDrag(event)) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const resourceIcon = architectureLibraryDragIcon(event);
+    if (document?.kind !== "architecture" || readOnly) return;
+    const resourceIcon = event.dataTransfer.getData(ARCHITECTURE_LIBRARY_DRAG_TYPE) as ArchitectureResourceIcon;
     const item = ARCHITECTURE_LIBRARY_ITEMS.find((candidate) => architectureResourceIcon(candidate) === resourceIcon);
     const graph = graphRef.current;
     if (!item || !graph) return;
+    event.preventDefault();
+    event.stopPropagation();
     placeArchitectureItem(item, graph.clientToLocal({ x: event.clientX, y: event.clientY }));
   };
 
   const handlePendingArchitecturePlacement = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!pendingArchitectureItem || document?.kind !== "architecture" || readOnly || event.button !== 0) return;
     const target = event.target instanceof Element ? event.target : null;
-    if (target?.closest(".x6-node, .x6-edge, input, textarea, [role='dialog']")) return;
+    if (target?.closest(".x6-node, .x6-edge")) return;
     const graph = graphRef.current;
     if (!graph) return;
     event.preventDefault();
@@ -1981,7 +1881,6 @@ export const DiagramEditorPane = ({
     const graph = graphRef.current;
     const pending = flowQuickCreate;
     if (!graph || !document || document.kind !== "flowchart" || !pending || readOnly) return;
-    suspendScrollerAutoResize(graph, scrollerResumeTimerRef, () => graphRef.current === graph);
     if (!graph.getCellById(pending.sourceNodeId)?.isNode()) {
       dismissFlowQuickCreate();
       return;
@@ -2573,13 +2472,7 @@ export const DiagramEditorPane = ({
           )}
           theme={theme}
         />
-        <div
-          ref={canvasSurfaceRef}
-          className={cn("relative min-h-0 flex-1", pendingArchitectureItem && "cursor-crosshair")}
-          onDragOver={handleArchitectureDragOver}
-          onDrop={handleArchitectureDrop}
-          onPointerDownCapture={handlePendingArchitecturePlacement}
-        >
+        <div className="relative min-h-0 flex-1">
           <div
             ref={containerRef}
             className={cn("edgeever-diagram-canvas absolute inset-0 touch-none outline-none", pendingArchitectureItem && "cursor-crosshair")}
@@ -2587,28 +2480,12 @@ export const DiagramEditorPane = ({
             data-diagram-appearance={resolvedTheme}
             data-diagram-kind={document.kind}
             data-diagram-theme={theme}
-            data-shift-select={shiftSelectActive ? "active" : undefined}
-            data-space-pan={spacePanActive ? "active" : undefined}
             tabIndex={0}
             aria-label={t("diagram.canvas", { type: kindLabel })}
+            onDragOver={handleArchitectureDragOver}
+            onDrop={handleArchitectureDrop}
+            onPointerDownCapture={handlePendingArchitecturePlacement}
           />
-          {!readOnly && (
-            <div
-              className="pointer-events-none absolute bottom-3 left-3 z-10 flex select-none items-center gap-1.5 rounded-full border border-slate-200/80 bg-white/90 px-3 py-1 text-xs text-slate-500 shadow-xs backdrop-blur-sm dark:border-slate-800 dark:bg-slate-900/90 dark:text-slate-400"
-              role="status"
-              aria-live="polite"
-            >
-              <span>{t("diagram.navHintPan")}</span>
-              <span className="text-slate-300 dark:text-slate-600">·</span>
-              <span className={cn("inline-flex items-center transition-colors duration-150", shiftSelectActive && "font-medium text-emerald-600 dark:text-emerald-400")}>
-                <span className="mr-1">{t("diagram.navHintHoldShift")}</span>
-                <kbd className={cn("mr-1 inline-flex items-center rounded border px-1.5 py-0.5 text-[10px] font-semibold transition-colors duration-150", shiftSelectActive ? "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-950 dark:text-emerald-300" : "border-slate-200 bg-slate-100 text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300")}>
-                  Shift
-                </kbd>
-                <span>{t("diagram.navHintBoxSelect")}</span>
-              </span>
-            </div>
-          )}
           {pendingArchitectureItem ? (
             <div className="pointer-events-none absolute left-1/2 top-3 z-20 -translate-x-1/2 rounded-md border border-slate-200 bg-white/95 px-3 py-1.5 text-xs font-medium text-slate-600 shadow-sm" role="status">
               {t("diagram.placeShapeHint", { shape: t(pendingArchitectureItem.labelKey) })}
