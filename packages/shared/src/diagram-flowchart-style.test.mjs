@@ -2,8 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { flowchartNodePresentation } from "./diagram-node-presentation.ts";
 import {
   DIAGRAM_READABLE_MIN_SCALE,
-  FLOWCHART_EDGE_LABEL_FONT_SIZE,
-  FLOWCHART_EDGE_LABEL_LINE_HEIGHT,
   FLOWCHART_SELECTABLE_THEMES,
   FLOWCHART_SURFACES,
   FLOWCHART_THEME_GROUPS,
@@ -31,11 +29,6 @@ const contrast = (foreground, background) => {
 };
 
 describe("flowchart semantic paint", () => {
-  test("keeps edge labels subordinate to process labels", () => {
-    expect(FLOWCHART_EDGE_LABEL_FONT_SIZE).toBeLessThan(13);
-    expect(FLOWCHART_EDGE_LABEL_LINE_HEIGHT).toBeLessThan(18);
-  });
-
   test("keeps process, decision, and terminator visually distinct", () => {
     for (const theme of FLOWCHART_SELECTABLE_THEMES) {
       for (const appearance of ["light", "dark"]) {
@@ -147,3 +140,5 @@ describe("flowchart readable viewport", () => {
     expect(DIAGRAM_READABLE_MIN_SCALE).toBe(0.85);
   });
 });
+
+

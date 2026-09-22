@@ -14,8 +14,7 @@ import { GitHubMark } from "@/components/GitHubRepositoryLink";
 import { applyPluginUpdate, checkPluginUpdates, type PluginUpdateInfo } from "@/lib/plugins/plugin-updates";
 import { PluginUpdateDialog } from "@/components/plugins/PluginUpdateDialog";
 import { PluginSettingsSection } from "@/components/plugins/PluginSettingsSection";
-import { buildPluginCatalogItems, getPluginCatalogDescription, getPluginCatalogName, getPluginCatalogSourceKey } from "@/lib/plugins/plugin-catalog";
-import type { MarketplaceEntry } from "@edgeever/plugin-api";
+import { buildPluginCatalogItems, getPluginCatalogSourceKey } from "@/lib/plugins/plugin-catalog";
 import { getPluginDetailPage, getPluginDetailPath, hasPluginSettings, isPluginCardCommand, type PluginDetailPage } from "@/lib/plugins/plugin-navigation";
 import type { ScheduledTask } from "@edgeever/shared";
 import { api, getOrCreateClientDeviceId } from "@/lib/api";
@@ -139,7 +138,6 @@ const PluginDetailView = ({
   page,
   commands,
   extension,
-  marketplaceEntry,
   host,
   pendingId,
   update,
@@ -151,7 +149,6 @@ const PluginDetailView = ({
   page: PluginDetailPage;
   commands: RegisteredPluginCommand[];
   extension: InstalledExtension;
-  marketplaceEntry?: MarketplaceEntry;
   host: EdgeEverPluginHost;
   pendingId: string | null;
   update?: PluginUpdateInfo;
@@ -163,10 +160,6 @@ const PluginDetailView = ({
   const { t, i18n } = useTranslation();
   const { manifest } = extension;
   const id = manifest.id;
-  const catalogItem = { id, extension, marketplaceEntry };
-  const locale = i18n.resolvedLanguage ?? i18n.language;
-  const name = getPluginCatalogName(catalogItem, locale);
-  const description = getPluginCatalogDescription(catalogItem, locale);
   const sourceKey = extension.source.verified ? "verified" : extension.source.kind;
 
   return (
@@ -174,7 +167,7 @@ const PluginDetailView = ({
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-xl font-semibold text-slate-950">{name}</h2>
+            <h2 className="text-xl font-semibold text-slate-950">{manifest.name}</h2>
             <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">{manifest.type}</span>
             {update ? (
               <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
@@ -182,10 +175,10 @@ const PluginDetailView = ({
               </span>
             ) : null}
           </div>
-          {description ? <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{description}</p> : null}
+          {manifest.description ? <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{manifest.description}</p> : null}
         </div>
         <Switch
-          aria-label={t("plugins.toggle", { name })}
+          aria-label={t("plugins.toggle", { name: manifest.name })}
           checked={extension.enabled}
           disabled={pendingId === id}
           onCheckedChange={onToggle}
@@ -475,7 +468,6 @@ export const PluginManagerCard = ({
             <PluginDetailView
               page={getPluginDetailPage(selectedExtension.manifest, requestedPage)}
               extension={selectedExtension}
-              marketplaceEntry={catalogItems.find((item) => item.id === selectedExtension.manifest.id)?.marketplaceEntry}
               host={host}
               update={updateQuery.data?.updates.find((update) => update.pluginId === selectedExtension.manifest.id)}
               commands={snapshot.commands.filter((command) => command.pluginId === selectedExtension.manifest.id)}
